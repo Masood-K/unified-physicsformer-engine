@@ -1,0 +1,35 @@
+pde:
+  name: elasticity
+  domain_x: [0.0, 1.0]   # 2D plate: x
+  domain_t: [0.0, 1.0]   # y-axis (static problem, t=y here)
+  params:
+    E: 1.0      # Young's modulus (normalised)
+    nu: 0.3     # Poisson's ratio
+
+model:
+  d_model: 32
+  d_hidden: 512
+  n_layers: 1
+  n_heads: 2
+  d_out: 2    # outputs: displacement u_x, u_y
+
+sequence:
+  k: 5
+  dt: 1.0e-4
+
+training:
+  epochs_adam: 500
+  epochs_lbfgs: 200
+  lr_adam: 1.0e-3
+  n_residual: 2601
+  n_boundary: 51
+  n_initial: 51
+  loss_weights:
+    residual: 1.0
+    bc: 1.0
+    ic: 0.0     # elasticity is BVP not IVP — no IC term
+    data: 0.0
+
+device: cuda
+seed: 42
+output_dir: runs/elasticity/
