@@ -1,5 +1,5 @@
 import torch
-from engine.model import WeightedSine, DataEmbedder, HDProjection
+from engine.model import WeightedSine, DataEmbedder, HDProjection, PhysicsFormerBlock
 
 
 # ── WeightedSine tests ──────────────────────────────────────────
@@ -124,3 +124,94 @@ def test_full_pipeline_shape():
     out = proj(seq)                        # (8, 5, 32)
 
     assert out.shape == (batch, k, d_model)
+
+
+# ── PhysicsFormerBlock tests ────────────────────────────────────
+
+def test_block_self_attention_shape():
+    """
+    Encoder mode: no context passed — runs self-attention.
+    Output shape must match input shape exactly.
+    """
+    block = PhysicsFormerBlock(d_model=32, n_heads=2, d_ff=64)
+    x = torch.randn(8, 5, 32)   # (batch, k, d_model)
+    out = block(x, context=None)
+    assert out.shape == (8, 5, 32)
+
+
+def test_block_cross_attention_shape():
+    """
+    Decoder mode: context passed from encoder.
+    Cross-attention: queries from x, keys/values from context.
+    """
+    block = PhysicsFormerBlock(d_model=32, n_heads=2, d_ff=64)
+    x       = torch.randn(8, 5, 32)
+    context = torch.randn(8, 5, 32)
+    out = block(x, context=context)
+    assert out.shape == (8, 5, 32)
+
+
+# ── Full PhysicsFormer model tests ──────────────────────────────
+
+def test_physicsformer_burgers_shape():
+    """
+    Burgers config: input_dim=2 (x,t), d_out=1 (scalar velocity).
+    Output must be (batch, k, 1).
+    """
+    from engine.model import PhysicsFormer
+    model = PhysicsFormer(
+        input_dim=2, d_model=32, n_heads=2,
+        n_layers=1, d_hidden=64, d_out=1,
+        k=5, dt=1e-4
+    )
+    x = torch.randn(8, 2)        # 8 points, each [x, t]
+    out = model(x)
+    assert out.shape == (8, 5, 1)
+
+
+def test_physicsformer_elasticity_shape():
+    """
+    Elasticity config: input_dim=2 (x,y), d_out=2 (u_x, u_y).
+    Output must be (batch, k, 2).
+    """
+    from engine.model import PhysicsFormer
+    model = PhysicsFormer(
+        input_dim=2, d_model=32, n_heads=2,
+        n_layers=1, d_hidden=64, d_out=2,
+        k=5, dt=1e-4
+    )
+    x = torch.randn(8, 2)        # 8 points, each [x, y]
+    out = model(x)
+    assert out.shape == (8, 5, 2)
+
+
+def test_physicsformer_has_all_components():
+    """
+    Model must contain all required submodules.
+    If any are missing the pipeline is broken.
+    """
+    from engine.model import PhysicsFormer
+    model = PhysicsFormer(
+        input_dim=2, d_model=32, n_heads=2,
+        n_layers=1, d_hidden=64, d_out=1,
+        k=5, dt=1e-4
+    )
+    assert hasattr(model, 'embedder')
+    assert hasattr(model, 'projection')
+    assert hasattr(model, 'encoder_blocks')
+    assert hasattr(model, 'decoder_blocks')
+    assert hasattr(model, 'output_mlp')
+
+
+def test_build_model_from_config():
+    """
+    build_model() must construct a working model from a config file.
+    This is the function train.py will call.
+    """
+    from engine.model import build_model
+    from engine.config import load_config
+    cfg = load_config("configs/burgers.yaml")
+    model = build_model(cfg)
+    x = torch.randn(4, 2)
+    out = model(x)
+    assert out.shape == (4, cfg.sequence.k, cfg.model.d_out)
