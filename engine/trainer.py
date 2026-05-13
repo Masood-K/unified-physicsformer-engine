@@ -2,39 +2,46 @@ import torch
 import torch.optim as optim
 from pathlib import Path
 
-from engine.sampler import (sample_residual_points,
+from engine.sampler import (sample_residual_grid,
                              sample_initial_points,
                              sample_boundary_points)
 
 
+def xavier_init(model):
+    """
+    Xavier uniform initialization for all Linear layers.
+    Bias set to 0.01 as specified in the paper (Table 1).
+    Keeps gradient magnitudes stable with sine activations.
+    """
+    for m in model.modules():
+        if isinstance(m, torch.nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                torch.nn.init.constant_(m.bias, 0.01)
+
+
 def train(model, cfg, loss_fn):
     """
-    Two-phase training loop used by PhysicsFormer paper:
+    Paper-accurate training for Burgers equation.
 
-    Phase 1 — Adam (fast, noisy)
-        Gets the network into the right region of solution space.
-        Runs for cfg.training.epochs_adam epochs.
-
-    Phase 2 — L-BFGS (slow, precise)
-        Fine-tunes to squeeze out the last digits of accuracy.
-        Gets us from ~10^-4 down to ~10^-6 MSE.
-
-    loss_fn signature:
-        loss_fn(model, res_pts, ic_pts, bc_pts) -> (total, (res, ic, bc))
+    Phase 1 — Adam warmup (short, just to get off random init)
+    Phase 2 — L-BFGS with strong Wolfe line search (paper method)
     """
     device = cfg.device
-    model = model.to(device)
+    model  = model.to(device)
 
-    # create output directory
+    # Xavier initialization — critical for convergence
+    xavier_init(model)
+
     out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # sample training points once — reused every epoch
-    res_pts = sample_residual_points(
-        cfg.training.n_residual,
-        cfg.pde.domain_x,
-        cfg.pde.domain_t,
-        device
+    # fixed grid — same as paper (51x51 = 2601 points)
+    res_pts = sample_residual_grid(
+        nx=51, nt=51,
+        domain_x=cfg.pde.domain_x,
+        domain_t=cfg.pde.domain_t,
+        device=device
     )
     ic_pts = sample_initial_points(
         cfg.training.n_initial,
@@ -47,29 +54,20 @@ def train(model, cfg, loss_fn):
         device
     )
 
-    history = []   # tracks loss per epoch for plotting later
+    history = []
 
-    # ── Phase 1: Adam ───────────────────────────────────────────
-    print(f"\nPhase 1: Adam — {cfg.training.epochs_adam} epochs")
-    optimizer = optim.Adam(model.parameters(),
-                           lr=cfg.training.lr_adam)
-
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=1000, gamma=0.5
-    )
+    # ── Phase 1: Adam warmup ─────────────────────────────────────
+    print(f"\nPhase 1: Adam warmup — {cfg.training.epochs_adam} epochs")
+    optimizer = optim.Adam(model.parameters(), lr=cfg.training.lr_adam)
 
     for epoch in range(cfg.training.epochs_adam):
         model.train()
         optimizer.zero_grad()
-
         total, (l_res, l_ic, l_bc) = loss_fn(
             model, res_pts, ic_pts, bc_pts
         )
-
         total.backward()
         optimizer.step()
-        scheduler.step()
-
         history.append(total.item())
 
         if epoch % 100 == 0:
@@ -77,38 +75,49 @@ def train(model, cfg, loss_fn):
                   f"total={total.item():.2e} | "
                   f"res={l_res.item():.2e} | "
                   f"ic={l_ic.item():.2e} | "
-                  f"bc={l_bc.item():.2e} | "
-                  f"lr={scheduler.get_last_lr()[0]:.1e}")
-            
+                  f"bc={l_bc.item():.2e}")
+
     # ── Phase 2: L-BFGS ─────────────────────────────────────────
-    print(f"\nPhase 2: L-BFGS — {cfg.training.epochs_lbfgs} epochs")
+    print(f"\nPhase 2: L-BFGS — {cfg.training.epochs_lbfgs} iterations")
     optimizer_lbfgs = optim.LBFGS(
         model.parameters(),
         max_iter=cfg.training.epochs_lbfgs,
-        tolerance_grad=1e-9,
-        tolerance_change=1e-11,
+        tolerance_grad=1e-10,
+        tolerance_change=1e-12,
         line_search_fn="strong_wolfe",
+        history_size=50,
     )
 
-    # L-BFGS requires a closure — a function that recomputes loss
+    iteration = [0]
+
     def closure():
         optimizer_lbfgs.zero_grad()
-        total, _ = loss_fn(model, res_pts, ic_pts, bc_pts)
+        total, (l_res, l_ic, l_bc) = loss_fn(
+            model, res_pts, ic_pts, bc_pts
+        )
         total.backward()
+
+        if iteration[0] % 100 == 0:
+            print(f"  L-BFGS iter {iteration[0]:4d} | "
+                  f"total={total.item():.2e} | "
+                  f"res={l_res.item():.2e} | "
+                  f"ic={l_ic.item():.2e} | "
+                  f"bc={l_bc.item():.2e}")
+        iteration[0] += 1
+        history.append(total.item())
         return total
 
     model.train()
-    final_loss = optimizer_lbfgs.step(closure)
-    history.append(final_loss.item())
-    print(f"  L-BFGS final loss: {final_loss.item():.2e}")
+    optimizer_lbfgs.step(closure)
+    final_loss = history[-1]
 
-    # ── Save checkpoint ──────────────────────────────────────────
+    # ── Save ─────────────────────────────────────────────────────
     ckpt_path = out_dir / "model.pt"
     torch.save({
         "model_state": model.state_dict(),
         "history":     history,
         "config":      cfg,
     }, ckpt_path)
-    print(f"\nCheckpoint saved to {ckpt_path}")
+    print(f"\nCheckpoint saved → {ckpt_path}")
 
     return model, history
