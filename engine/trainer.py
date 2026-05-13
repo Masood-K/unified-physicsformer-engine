@@ -55,7 +55,7 @@ def train(model, cfg, loss_fn):
                            lr=cfg.training.lr_adam)
 
     scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=500, gamma=0.5
+        optimizer, step_size=1000, gamma=0.5
     )
 
     for epoch in range(cfg.training.epochs_adam):

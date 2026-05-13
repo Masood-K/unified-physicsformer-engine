@@ -17,16 +17,16 @@ sequence:
   dt: 1.0e-4
 
 training:
-  epochs_adam: 2000
-  epochs_lbfgs: 500
-  lr_adam: 1.0e-3
+  epochs_adam: 3000
+  epochs_lbfgs: 1000
+  lr_adam: 5.0e-4
   n_residual: 2601
   n_boundary: 51
   n_initial: 51
   loss_weights:
     residual: 1.0
-    bc: 10.0
-    ic: 10.0
+    bc: 5.0
+    ic: 5.0
     data: 0.0
 
 device: cuda
