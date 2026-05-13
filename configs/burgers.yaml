@@ -3,7 +3,7 @@ pde:
   domain_x: [-1.0, 1.0]
   domain_t: [0.0, 1.0]
   params:
-    nu: 0.00318309  # 0.01/pi — kinematic viscosity
+    nu: 0.00318309
 
 model:
   d_model: 32
@@ -17,17 +17,17 @@ sequence:
   dt: 1.0e-4
 
 training:
-  epochs_adam: 500
-  epochs_lbfgs: 200
+  epochs_adam: 2000
+  epochs_lbfgs: 500
   lr_adam: 1.0e-3
   n_residual: 2601
   n_boundary: 51
   n_initial: 51
   loss_weights:
     residual: 1.0
-    bc: 1.0
-    ic: 1.0
-    data: 0.0   # no supervised data for forward problem
+    bc: 10.0
+    ic: 10.0
+    data: 0.0
 
 device: cuda
 seed: 42

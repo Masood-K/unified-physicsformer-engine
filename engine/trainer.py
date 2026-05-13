@@ -54,6 +54,10 @@ def train(model, cfg, loss_fn):
     optimizer = optim.Adam(model.parameters(),
                            lr=cfg.training.lr_adam)
 
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=500, gamma=0.5
+    )
+
     for epoch in range(cfg.training.epochs_adam):
         model.train()
         optimizer.zero_grad()
@@ -64,16 +68,18 @@ def train(model, cfg, loss_fn):
 
         total.backward()
         optimizer.step()
+        scheduler.step()
 
         history.append(total.item())
 
-        if epoch % 50 == 0:
+        if epoch % 100 == 0:
             print(f"  epoch {epoch:4d} | "
                   f"total={total.item():.2e} | "
                   f"res={l_res.item():.2e} | "
                   f"ic={l_ic.item():.2e} | "
-                  f"bc={l_bc.item():.2e}")
-
+                  f"bc={l_bc.item():.2e} | "
+                  f"lr={scheduler.get_last_lr()[0]:.1e}")
+            
     # ── Phase 2: L-BFGS ─────────────────────────────────────────
     print(f"\nPhase 2: L-BFGS — {cfg.training.epochs_lbfgs} epochs")
     optimizer_lbfgs = optim.LBFGS(
