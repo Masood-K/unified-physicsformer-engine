@@ -1,10 +1,13 @@
 import argparse
 import torch
+
 from engine.config import load_config
+from engine.model import build_model
+from engine.trainer import train
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Unified Physics Engine")
+    parser = argparse.ArgumentParser(description="Unified PhysicsFormer Engine")
     parser.add_argument("--config", required=True, help="Path to yaml config")
     args = parser.parse_args()
 
@@ -16,13 +19,37 @@ def main():
         cfg.device = "cpu"
 
     torch.manual_seed(cfg.seed)
-    print(f"\n--- Unified Physics Engine ---")
-    print(f"PDE      : {cfg.pde.name}")
-    print(f"Device   : {cfg.device}")
-    print(f"d_model  : {cfg.model.d_model}")
-    print(f"k / dt   : {cfg.sequence.k} / {cfg.sequence.dt}")
-    print(f"Output   : {cfg.output_dir}")
-    print(f"\nConfig loaded. Model not yet built — Step 2 next.\n")
+
+    print(f"\n--- Unified PhysicsFormer Engine ---")
+    print(f"PDE    : {cfg.pde.name}")
+    print(f"Device : {cfg.device}")
+
+    # build model
+    model = build_model(cfg)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Params : {n_params:,}")
+
+    # load the right loss function based on PDE name
+    if cfg.pde.name == "burgers":
+        from pdes.burgers import compute_loss
+        nu = cfg.pde.params["nu"]
+        k  = cfg.sequence.k
+        w  = cfg.training.loss_weights
+
+        def loss_fn(model, res_pts, ic_pts, bc_pts):
+            return compute_loss(model, res_pts, ic_pts,
+                                bc_pts, nu, w, k)
+
+    else:
+        raise ValueError(f"Unknown PDE: {cfg.pde.name}. "
+                         f"Add it to pdes/ and wire it here.")
+
+    # train
+    model, history = train(model, cfg, loss_fn)
+
+    print(f"\nDone. Final loss: {history[-1]:.2e}")
+    print(f"Target:           ~1e-6")
+    print(f"Result:           {'✓ reached' if history[-1] < 1e-4 else '✗ not yet — try more epochs'}")
 
 
 if __name__ == "__main__":
