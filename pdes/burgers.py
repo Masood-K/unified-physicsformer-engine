@@ -131,7 +131,7 @@ def evaluate_l2_error(model, cfg) -> float:
     pts    = torch.cat([x_flat, t_flat], dim=1).to(device)
 
     with torch.no_grad():
-        u_pred = model(pts)[:, 0, :].cpu()
+        u_pred = model(pts).cpu()
 
     print("  Computing analytical solution (Cole-Hopf)...")
     u_true = burgers_analytical(x_flat, t_flat, nu)
