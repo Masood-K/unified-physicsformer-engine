@@ -70,13 +70,11 @@ def train(model, cfg, loss_fn):
         print("\nPhase 1: Adam skipped")
 
     # ── Phase 2: L-BFGS ─────────────────────────────────────────
-    # Run L-BFGS as repeated single-step calls so we can
-    # print progress and track history properly
     print(f"\nPhase 2: L-BFGS — {cfg.training.epochs_lbfgs} steps")
 
     opt_lbfgs = optim.LBFGS(
         model.parameters(),
-        max_iter=20,              # inner iterations per step
+        max_iter=20,
         tolerance_grad=1e-12,
         tolerance_change=1e-12,
         line_search_fn="strong_wolfe",
@@ -84,43 +82,35 @@ def train(model, cfg, loss_fn):
         lr=1.0,
     )
 
+    # track loss terms inside closure so we can log them
+    log = {"res": 0.0, "ic": 0.0, "bc": 0.0}
+
     for step in range(cfg.training.epochs_lbfgs):
         model.train()
 
         def closure():
             opt_lbfgs.zero_grad()
-            total, _ = loss_fn(model, res_pts, ic_pts, bc_pts)
+            total, (l_res, l_ic, l_bc) = loss_fn(
+                model, res_pts, ic_pts, bc_pts
+            )
             total.backward()
+            # store for logging — detach so no graph kept
+            log["res"] = l_res.item()
+            log["ic"]  = l_ic.item()
+            log["bc"]  = l_bc.item()
             return total
 
-        loss_val = opt_lbfgs.step(closure)
+        loss_val     = opt_lbfgs.step(closure)
         current_loss = loss_val.item()
         history.append(current_loss)
 
         if step % 100 == 0:
-            # get individual loss terms for logging
-            with torch.no_grad():
-                _, (l_res, l_ic, l_bc) = loss_fn(
-                    model, res_pts, ic_pts, bc_pts
-                )
             print(f"  L-BFGS step {step:4d} | "
                   f"total={current_loss:.2e} | "
-                  f"res={l_res.item():.2e} | "
-                  f"ic={l_ic.item():.2e} | "
-                  f"bc={l_bc.item():.2e}")
+                  f"res={log['res']:.2e} | "
+                  f"ic={log['ic']:.2e} | "
+                  f"bc={log['bc']:.2e}")
 
-        # early stop if converged
         if current_loss < 1e-6:
             print(f"  Converged at step {step}!")
             break
-
-    # ── Save ─────────────────────────────────────────────────────
-    ckpt_path = out_dir / "model.pt"
-    torch.save({
-        "model_state": model.state_dict(),
-        "history":     history,
-        "config":      cfg,
-    }, ckpt_path)
-    print(f"\nCheckpoint saved → {ckpt_path}")
-
-    return model, history
