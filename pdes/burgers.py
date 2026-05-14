@@ -81,7 +81,8 @@ def burgers_analytical(x_flat: torch.Tensor,
                         t_flat: torch.Tensor,
                         nu: float) -> torch.Tensor:
     """
-    Exact Burgers solution via Cole-Hopf transformation.
+    Stable Cole-Hopf solution using log-sum-exp trick.
+    Avoids numerical overflow for small nu.
     """
     import numpy as np
     from scipy import integrate
@@ -90,6 +91,9 @@ def burgers_analytical(x_flat: torch.Tensor,
     t_np = t_flat.detach().cpu().numpy().flatten()
     u    = np.zeros_like(x_np)
 
+    # precompute the large constant to subtract (log-sum-exp trick)
+    C = 1.0 / (2.0 * np.pi * nu)   # this is the large exponent
+
     for i in range(len(x_np)):
         xi, ti = x_np[i], t_np[i]
 
@@ -97,23 +101,34 @@ def burgers_analytical(x_flat: torch.Tensor,
             u[i] = -np.sin(np.pi * xi)
             continue
 
-        def phi(y):
-            return (np.exp(-(xi - y) ** 2 / (4 * nu * ti)) *
-                    np.exp(-np.cos(np.pi * y) / (2 * np.pi * nu)))
+        # use substitution: factor out exp(C) from integrand
+        # phi(y)  = exp(-(xi-y)^2/(4*nu*ti)) * exp(-cos(pi*y)*C)
+        # log-stabilized: subtract max exponent C before exp
+        def log_phi(y):
+            heat = -(xi - y)**2 / (4 * nu * ti)
+            ic   = -np.cos(np.pi * y) * C
+            return heat + ic   # log of integrand
 
-        def dphi(y):
-            return (-(xi - y) / (2 * nu * ti)) * phi(y)
+        # find max for numerical stability
+        y_test = np.linspace(-1, 1, 1000)
+        log_vals = np.array([log_phi(y) for y in y_test])
+        log_max  = log_vals.max()
 
-        p,  _ = integrate.quad(phi,  -1, 1, limit=200,
-                               epsabs=1e-10, epsrel=1e-10)
-        dp, _ = integrate.quad(dphi, -1, 1, limit=200,
-                               epsabs=1e-10, epsrel=1e-10)
+        def phi_stable(y):
+            return np.exp(log_phi(y) - log_max)
+
+        def dphi_stable(y):
+            factor = -(xi - y) / (2 * nu * ti)
+            return factor * phi_stable(y)
+
+        p,  _ = integrate.quad(phi_stable,  -1, 1,
+                               limit=500, epsabs=1e-8, epsrel=1e-8)
+        dp, _ = integrate.quad(dphi_stable, -1, 1,
+                               limit=500, epsabs=1e-8, epsrel=1e-8)
 
         u[i] = -2 * nu * dp / (p + 1e-15)
 
     return torch.tensor(u, dtype=torch.float32).unsqueeze(1)
-
-
 def evaluate_l2_error(model, cfg) -> float:
     """
     L2 relative error against Cole-Hopf exact solution.
