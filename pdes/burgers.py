@@ -131,26 +131,38 @@ def burgers_analytical(x_flat: torch.Tensor,
     return torch.tensor(u, dtype=torch.float32).unsqueeze(1)
 def evaluate_l2_error(model, cfg) -> float:
     """
-    L2 relative error against Cole-Hopf exact solution.
+    L2 relative error using Raissi et al. exact dataset.
+    This is the standard benchmark used in all PINN papers.
     """
+    import numpy as np
+    from scipy.io import loadmat
+
     model.eval()
     device = cfg.device
-    nu     = cfg.pde.params["nu"]
 
-    x_vals = torch.linspace(-1,  1, 32)
-    t_vals = torch.linspace(0.1, 1, 16)
-    grid_x, grid_t = torch.meshgrid(x_vals, t_vals, indexing='ij')
+    # load exact solution
+    try:
+        data   = loadmat("burgers_shock.mat")
+        x_star = data["x"].flatten()          # (256,)
+        t_star = data["t"].flatten()          # (100,)
+        u_star = data["usol"]                 # (256, 100)
+    except FileNotFoundError:
+        print("  burgers_shock.mat not found — run wget first")
+        return float("nan")
 
-    x_flat = grid_x.flatten().unsqueeze(1)
-    t_flat = grid_t.flatten().unsqueeze(1)
+    # build test points
+    x_grid, t_grid = np.meshgrid(x_star, t_star, indexing="ij")
+    x_flat = torch.tensor(x_grid.flatten(),
+                          dtype=torch.float32).unsqueeze(1)
+    t_flat = torch.tensor(t_grid.flatten(),
+                          dtype=torch.float32).unsqueeze(1)
     pts    = torch.cat([x_flat, t_flat], dim=1).to(device)
 
     with torch.no_grad():
-        u_pred = model(pts).cpu()
+        u_pred = model(pts).cpu().numpy().reshape(256, 100)
 
-    print("  Computing analytical solution (Cole-Hopf)...")
-    u_true = burgers_analytical(x_flat, t_flat, nu)
+    u_true = u_star
 
-    numer = torch.norm(u_pred - u_true)
-    denom = torch.norm(u_true)
-    return (numer / denom).item()
+    numer = np.linalg.norm(u_pred - u_true)
+    denom = np.linalg.norm(u_true)
+    return float(numer / denom)
