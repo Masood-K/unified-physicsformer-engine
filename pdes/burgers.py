@@ -49,45 +49,27 @@ def compute_loss(model,
                  weights: dict,
                  k:       int) -> tuple:
     """
-    Clean loss computation — no detach inside residual loop.
-    res_pts must have requires_grad=True from the sampler.
+    Clean PINN loss for UnifiedPINN.
+    Model outputs (batch, 1) directly — no sequence dimension.
     """
-    dt = model.embedder.dt
-
     # ── residual loss ────────────────────────────────────────────
-    res_losses = []
-    for step in range(k):
-        # shift time coordinate for this pseudo-step
-        t_shifted = res_pts[:, 1:2] + step * dt
-        x_coord   = res_pts[:, 0:1]
-
-        # build shifted pts with grad enabled
-        pts_step = torch.cat([x_coord, t_shifted], dim=1)
-        pts_step = pts_step.detach().requires_grad_(True)
-
-        u_step = model(pts_step)[:, 0, :]
-        res    = pde_residual(u_step, pts_step, nu)
-        res_losses.append(torch.mean(res ** 2))
-
-    loss_res = torch.stack(res_losses).mean()
+    u_res  = model(res_pts)          # (n_res, 1)
+    res    = pde_residual(u_res, res_pts, nu)
+    loss_res = torch.mean(res ** 2)
 
     # ── IC loss ──────────────────────────────────────────────────
-    u_ic      = model(ic_pts)[:, 0, :]
-    loss_ic   = torch.mean(
+    u_ic     = model(ic_pts)         # (n_ic, 1)
+    loss_ic  = torch.mean(
         (u_ic - initial_condition(ic_pts[:, 0:1])) ** 2
     )
 
     # ── BC loss ──────────────────────────────────────────────────
-    u_bc_all  = model(bc_pts)
-    u_bc_true = boundary_condition(bc_pts)
-    bc_losses = []
-    for step in range(k):
-        bc_losses.append(
-            torch.mean((u_bc_all[:, step, :] - u_bc_true) ** 2)
-        )
-    loss_bc = torch.stack(bc_losses).mean()
+    u_bc     = model(bc_pts)         # (n_bc, 1)
+    loss_bc  = torch.mean(
+        (u_bc - boundary_condition(bc_pts)) ** 2
+    )
 
-    # ── total ─────────────────────────────────────────────────────
+    # ── weighted total ───────────────────────────────────────────
     total = (weights["residual"] * loss_res +
              weights["ic"]       * loss_ic  +
              weights["bc"]       * loss_bc)

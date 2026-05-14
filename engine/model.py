@@ -1,231 +1,177 @@
 import torch
 import torch.nn as nn
+import math
+
+
+class FourierFeatureEmbedding(nn.Module):
+    """
+    Fourier Feature Embedding — fixes spectral bias.
+
+    Standard MLPs struggle to learn high-frequency patterns
+    because they bias toward smooth low-frequency solutions.
+    This is the #1 reason PINNs fail on sharp solutions like
+    Burgers shock waves.
+
+    Fix: project inputs through random Fourier features first.
+    This gives the network access to all frequencies from
+    the very first layer.
+
+    How it works:
+        input [x, t]  (2 numbers)
+            ↓
+        multiply by random matrix B (2 × n_fourier)
+            ↓
+        apply sin and cos
+            ↓
+        output: 2*n_fourier rich frequency features
+
+    B is fixed (not trained) — sampled once at init.
+    sigma controls the frequency range — higher sigma
+    means higher frequencies. For Burgers shock: sigma=1.0
+    For high-frequency problems: sigma=5.0 or higher.
+
+    Example:
+        input:  [0.5, 0.3]          — 2 numbers
+        output: [sin(...), cos(...), ...]  — 64 numbers
+                 rich multi-frequency representation
+    """
+    def __init__(self, input_dim: int, n_fourier: int, sigma: float = 1.0):
+        super().__init__()
+        # fixed random matrix — not trained
+        B = torch.randn(input_dim, n_fourier) * sigma
+        self.register_buffer("B", B)
+        self.output_dim = 2 * n_fourier
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (batch, input_dim)
+        proj = x @ self.B              # (batch, n_fourier)
+        return torch.cat([
+            torch.sin(2 * math.pi * proj),
+            torch.cos(2 * math.pi * proj),
+        ], dim=-1)                     # (batch, 2*n_fourier)
 
 
 class WeightedSine(nn.Module):
     """
     Activation: phi(t) = w * sin(t)
-    w is a trainable scalar — starts at 1.0.
-    Sine naturally matches oscillatory PDE solutions.
-    Proven universal approximator (PhysicsFormer paper, Theorem 2).
+    w is trainable — network learns the right amplitude.
+    Proven universal approximator (PhysicsFormer paper Theorem 2).
+    Works hand-in-hand with Fourier features.
     """
     def __init__(self):
         super().__init__()
         self.w = nn.Parameter(torch.ones(1))
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.w * torch.sin(x)
 
 
-class DataEmbedder(nn.Module):
+class ResidualBlock(nn.Module):
     """
-    Turns one point [x, t] into a sequence of k timesteps.
+    One hidden layer with a residual (skip) connection.
 
-    Why: transformers need sequences to capture temporal patterns.
-    Standard PINNs treat every point independently — they miss
-    how the solution evolves over time. This fixes that.
+    Residual connections let gradients flow directly from
+    output to input — critical for deep networks solving PDEs
+    where gradients need to reach early layers cleanly.
 
-    Example (k=3, dt=0.1):
-        Input:  [x=0.5, t=0.3]
-        Output: [x=0.5, t=0.3]   step 0
-                [x=0.5, t=0.4]   step 1
-                [x=0.5, t=0.5]   step 2
-
-    Input shape:  (batch, input_dim)
-    Output shape: (batch, k, input_dim)
+    Without residual:  x → Linear → Activation → out
+    With residual:     x → Linear → Activation → out + x
+                           (if dims match)
     """
-    def __init__(self, k: int, dt: float, input_dim: int):
+    def __init__(self, width: int):
         super().__init__()
-        self.k = k
-        self.dt = dt
-        self.input_dim = input_dim
+        self.linear = nn.Linear(width, width)
+        self.act    = WeightedSine()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        sequence = []
-        for step in range(self.k):
-            x_step = x.clone()
-            # only advance the time column (last column)
-            x_step[:, -1] = x[:, -1] + step * self.dt
-            sequence.append(x_step)
-        # (batch, k, input_dim)
-        return torch.stack(sequence, dim=1)
+        return x + self.act(self.linear(x))
 
 
-class HDProjection(nn.Module):
+class UnifiedPINN(nn.Module):
     """
-    High-Dimensional projection.
-    Lifts raw input from input_dim → d_model dimensions.
+    Unified Physics-Informed Neural Network.
 
-    Why: [x, t] is only 2 numbers — too little for attention
-    to find meaningful patterns. Expanding to 32 dimensions
-    gives the transformer rich features to work with.
+    This is the core of your physics engine.
+    One architecture — any PDE — by swapping the loss function.
 
-    Example:
-        [0.5, 0.3]  →  [0.12, -0.44, 0.87, ..., 0.23]
-         2 numbers          32 numbers
+    Architecture:
+        [x, t]  or  [x, y, t]  or  [x, y, z, t]
+            ↓
+        FourierFeatureEmbedding   — rich frequency representation
+            ↓
+        Input projection          — lifts to network width
+            ↓
+        N × ResidualBlock         — deep representation
+            ↓
+        Output projection         — maps to physical quantity
 
-    Input shape:  (batch, k, input_dim)
-    Output shape: (batch, k, d_model)
-    """
-    def __init__(self, input_dim: int, d_model: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, d_model),
-            WeightedSine(),
-            nn.Linear(d_model, d_model),
-            WeightedSine(),
-        )
+    Output channels:
+        Burgers:     1  (scalar velocity u)
+        Elasticity:  2  (displacement u_x, u_y)
+        Navier-Stokes: 3 (u, v, p) or 2 (psi, p)
+        Heat:        1  (temperature T)
+        Any PDE:     however many fields it has
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # applies same MLP to every timestep in the sequence
-        return self.net(x)
-    
-class PhysicsFormerBlock(nn.Module):
-    """
-    One encoder or decoder block.
-    Contains: Multi-Head Attention → WeightedSine → Feed Forward → WeightedSine
-
-    Why residual connections: they let gradients flow cleanly
-    during backpropagation — prevents the vanishing gradient
-    problem that makes deep networks hard to train.
-
-    Input shape:  (batch, k, d_model)
-    Output shape: (batch, k, d_model)
-    """
-    def __init__(self, d_model: int, n_heads: int, d_ff: int):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(
-            embed_dim=d_model,
-            num_heads=n_heads,
-            batch_first=True,   # (batch, seq, features) format
-        )
-        self.ff = nn.Sequential(
-            nn.Linear(d_model, d_ff),
-            WeightedSine(),
-            nn.Linear(d_ff, d_model),
-        )
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.act = WeightedSine()
-
-    def forward(self,
-                x: torch.Tensor,
-                context: torch.Tensor = None) -> torch.Tensor:
-        """
-        x       — the sequence being processed
-        context — if provided, cross-attention against context (decoder)
-                  if None, self-attention (encoder)
-        """
-        # attention: self or cross
-        q = x
-        kv = context if context is not None else x
-        attn_out, _ = self.attn(q, kv, kv)
-
-        # residual + norm + activation
-        x = self.norm1(x + self.act(attn_out))
-
-        # feed forward + residual + norm
-        x = self.norm2(x + self.ff(x))
-        return x
-
-
-class PhysicsFormer(nn.Module):
-    """
-    The full PhysicsFormer model.
-    Chains all components from Steps 2 and 3 together.
-
-    Full pipeline:
-        raw points [x, t]
-            ↓ DataEmbedder      — creates k-step sequence
-            ↓ HDProjection      — lifts to d_model dimensions
-            ↓ Encoder blocks    — self-attention across timesteps
-            ↓ Decoder blocks    — cross-attention with encoder output
-            ↓ Output MLP        — projects to physical quantity
-
-    Output: predictions for all k timesteps.
-    For Burgers:    shape (batch, k, 1)   — scalar velocity u
-    For Elasticity: shape (batch, k, 2)   — displacement (u_x, u_y)
+    The PDE only lives in the loss function — never in this class.
+    Swap configs/burgers.yaml → configs/elasticity.yaml and
+    the same network learns a completely different physics.
     """
     def __init__(self,
-                 input_dim: int,
-                 d_model: int,
-                 n_heads: int,
-                 n_layers: int,
-                 d_hidden: int,
-                 d_out: int,
-                 k: int,
-                 dt: float):
+                 input_dim:  int,
+                 d_model:    int,
+                 n_layers:   int,
+                 d_out:      int,
+                 n_fourier:  int = 64,
+                 sigma:      float = 1.0):
         super().__init__()
 
-        # Step 2 components
-        self.embedder   = DataEmbedder(k=k, dt=dt, input_dim=input_dim)
-        #self.input_norm = nn.LayerNorm(input_dim)   # ← add this
-        self.projection = HDProjection(input_dim=input_dim, d_model=d_model)
-
-        # Step 3 — encoder stack
-        self.encoder_blocks = nn.ModuleList([
-            PhysicsFormerBlock(d_model=d_model, n_heads=n_heads, d_ff=d_hidden)
-            for _ in range(n_layers)
-        ])
-
-        # Step 3 — decoder stack (cross-attends to encoder output)
-        self.decoder_blocks = nn.ModuleList([
-            PhysicsFormerBlock(d_model=d_model, n_heads=n_heads, d_ff=d_hidden)
-            for _ in range(n_layers)
-        ])
-
-        # output MLP: d_model → d_out
-        self.output_mlp = nn.Sequential(
-            nn.Linear(d_model, d_hidden),
-            WeightedSine(),
-            nn.Linear(d_hidden, d_out),
+        self.embedding = FourierFeatureEmbedding(
+            input_dim=input_dim,
+            n_fourier=n_fourier,
+            sigma=sigma,
         )
+        embed_dim = self.embedding.output_dim  # 2 * n_fourier
+
+        # lift from embedding dim to model width
+        self.input_proj = nn.Sequential(
+            nn.Linear(embed_dim, d_model),
+            WeightedSine(),
+        )
+
+        # deep residual trunk
+        self.blocks = nn.ModuleList([
+            ResidualBlock(d_model) for _ in range(n_layers)
+        ])
+
+        # output head
+        self.output_proj = nn.Linear(d_model, d_out)
+
+        # store for reference
+        self.input_dim = input_dim
+        self.d_out     = d_out
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        x: raw input points, shape (batch, input_dim)
-        returns: predictions,  shape (batch, k, d_out)
+        x: (batch, input_dim)  — raw spatial/temporal coordinates
+        returns: (batch, d_out) — predicted physical fields
         """
-        # Step 2: embed into sequence
-        seq = self.embedder(x)           # (batch, k, input_dim)
-        #seq = self.input_norm(seq)       # ← add this
-        seq = self.projection(seq)       # (batch, k, d_model)
-
-        # encoder: self-attention across timesteps
-        enc = seq
-        for block in self.encoder_blocks:
-            enc = block(enc, context=None)
-
-        # decoder: cross-attention — decoder queries encoder memory
-        # paper uses same embeddings for encoder and decoder input
-        dec = seq
-        for block in self.decoder_blocks:
-            dec = block(dec, context=enc)
-
-        # output MLP applied to every timestep
-        return self.output_mlp(dec)   # (batch, k, d_out)
+        h = self.embedding(x)      # (batch, 2*n_fourier)
+        h = self.input_proj(h)     # (batch, d_model)
+        for block in self.blocks:
+            h = block(h)           # (batch, d_model)
+        return self.output_proj(h) # (batch, d_out)
 
 
-def build_model(cfg) -> PhysicsFormer:
+def build_model(cfg) -> UnifiedPINN:
     """
-    Builds a PhysicsFormer from an EngineConfig.
-    This is what train.py will call.
-
-    input_dim depends on the PDE:
-      Burgers 1D:    input_dim = 2  (x, t)
-      Elasticity 2D: input_dim = 3  (x, y, t)  ← t used as y here
+    Builds a UnifiedPINN from config.
+    Called by train.py — one line to get a working model.
     """
-    # infer input_dim from domain dimensionality
-    # domain_x is always present; domain_t is the time/second axis
-    input_dim = 2   # default: (x, t)
-
-    return PhysicsFormer(
-        input_dim=input_dim,
+    return UnifiedPINN(
+        input_dim=2,
         d_model=cfg.model.d_model,
-        n_heads=cfg.model.n_heads,
         n_layers=cfg.model.n_layers,
-        d_hidden=cfg.model.d_hidden,
         d_out=cfg.model.d_out,
-        k=cfg.sequence.k,
-        dt=cfg.sequence.dt,
+        n_fourier=cfg.model.get("n_fourier", 64),
+        sigma=cfg.model.get("sigma", 1.0),
     )

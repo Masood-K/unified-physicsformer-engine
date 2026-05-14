@@ -5,11 +5,14 @@ import yaml
 
 @dataclass
 class ModelConfig:
-    d_model: int = 32
-    d_hidden: int = 512
-    n_layers: int = 1
-    n_heads: int = 4
-    d_out: int = 1
+    d_model: int   = 128
+    n_layers: int  = 4
+    d_out: int     = 1
+    n_fourier: int = 64
+    sigma: float   = 1.0
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
 
 
 @dataclass
