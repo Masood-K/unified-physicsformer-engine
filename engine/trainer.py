@@ -69,6 +69,7 @@ def train(model, cfg, loss_fn):
                 model, res_pts, ic_pts, bc_pts
             )
             total.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             history.append(total.item())
 
@@ -86,10 +87,11 @@ def train(model, cfg, loss_fn):
     optimizer_lbfgs = optim.LBFGS(
         model.parameters(),
         max_iter=cfg.training.epochs_lbfgs,
-        tolerance_grad=1e-10,
-        tolerance_change=1e-12,
+        tolerance_grad=1e-7,
+        tolerance_change=1e-9,
         line_search_fn="strong_wolfe",
-        history_size=50,
+        history_size=100,
+        lr=0.1,
     )
 
     iteration = [0]
