@@ -159,7 +159,7 @@ class PhysicsFormer(nn.Module):
 
         # Step 2 components
         self.embedder   = DataEmbedder(k=k, dt=dt, input_dim=input_dim)
-        self.input_norm = nn.LayerNorm(input_dim)   # ← add this
+        #self.input_norm = nn.LayerNorm(input_dim)   # ← add this
         self.projection = HDProjection(input_dim=input_dim, d_model=d_model)
 
         # Step 3 — encoder stack
@@ -188,7 +188,7 @@ class PhysicsFormer(nn.Module):
         """
         # Step 2: embed into sequence
         seq = self.embedder(x)           # (batch, k, input_dim)
-        seq = self.input_norm(seq)       # ← add this
+        #seq = self.input_norm(seq)       # ← add this
         seq = self.projection(seq)       # (batch, k, d_model)
 
         # encoder: self-attention across timesteps
