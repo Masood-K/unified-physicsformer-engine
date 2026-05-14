@@ -46,6 +46,14 @@ def main():
 
     # train
     model, history = train(model, cfg, loss_fn)
+    
+    # ── Evaluate L2 relative error against analytical solution ───
+    if cfg.pde.name == "burgers":
+        from pdes.burgers import evaluate_l2_error
+        l2_error = evaluate_l2_error(model, cfg)
+        print(f"\nL2 relative error : {l2_error:.2e}")
+        print(f"Paper target      : 2.4e-04")
+        print(f"Result            : {'✓ matched' if l2_error < 5e-4 else '✗ not yet'}")
 
     print(f"\nDone. Final loss: {history[-1]:.2e}")
     print(f"Target:           ~1e-6")

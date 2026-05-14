@@ -56,26 +56,29 @@ def train(model, cfg, loss_fn):
 
     history = []
 
-    # ── Phase 1: Adam warmup ─────────────────────────────────────
-    print(f"\nPhase 1: Adam warmup — {cfg.training.epochs_adam} epochs")
-    optimizer = optim.Adam(model.parameters(), lr=cfg.training.lr_adam)
+    # ── Phase 1: Adam warmup (skip if epochs_adam=0) ─────────────
+    if cfg.training.epochs_adam > 0:
+        print(f"\nPhase 1: Adam warmup — {cfg.training.epochs_adam} epochs")
+        optimizer = optim.Adam(model.parameters(), lr=cfg.training.lr_adam)
 
-    for epoch in range(cfg.training.epochs_adam):
-        model.train()
-        optimizer.zero_grad()
-        total, (l_res, l_ic, l_bc) = loss_fn(
-            model, res_pts, ic_pts, bc_pts
-        )
-        total.backward()
-        optimizer.step()
-        history.append(total.item())
+        for epoch in range(cfg.training.epochs_adam):
+            model.train()
+            optimizer.zero_grad()
+            total, (l_res, l_ic, l_bc) = loss_fn(
+                model, res_pts, ic_pts, bc_pts
+            )
+            total.backward()
+            optimizer.step()
+            history.append(total.item())
 
-        if epoch % 100 == 0:
-            print(f"  epoch {epoch:4d} | "
-                  f"total={total.item():.2e} | "
-                  f"res={l_res.item():.2e} | "
-                  f"ic={l_ic.item():.2e} | "
-                  f"bc={l_bc.item():.2e}")
+            if epoch % 100 == 0:
+                print(f"  epoch {epoch:4d} | "
+                      f"total={total.item():.2e} | "
+                      f"res={l_res.item():.2e} | "
+                      f"ic={l_ic.item():.2e} | "
+                      f"bc={l_bc.item():.2e}")
+    else:
+        print("\nPhase 1: Adam skipped (epochs_adam=0)")
 
     # ── Phase 2: L-BFGS ─────────────────────────────────────────
     print(f"\nPhase 2: L-BFGS — {cfg.training.epochs_lbfgs} iterations")
