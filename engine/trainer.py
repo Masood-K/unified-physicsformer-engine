@@ -56,10 +56,11 @@ def train(model, cfg, loss_fn):
 
     history = []
 
-    # ── Phase 1: Adam warmup (skip if epochs_adam=0) ─────────────
+    # ── Phase 1: Adam warmup ─────────────────────────────────────
     if cfg.training.epochs_adam > 0:
         print(f"\nPhase 1: Adam warmup — {cfg.training.epochs_adam} epochs")
-        optimizer = optim.Adam(model.parameters(), lr=cfg.training.lr_adam)
+        optimizer = optim.Adam(model.parameters(),
+                               lr=cfg.training.lr_adam)
 
         for epoch in range(cfg.training.epochs_adam):
             model.train()

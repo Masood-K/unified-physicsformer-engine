@@ -17,9 +17,9 @@ sequence:
   dt: 1.0e-4
 
 training:
-  epochs_adam: 500
-  epochs_lbfgs: 500
-  lr_adam: 1.0e-3
+  epochs_adam: 1000
+  epochs_lbfgs: 2000
+  lr_adam: 1.0e-4
   n_residual: 2601
   n_boundary: 51
   n_initial: 51
