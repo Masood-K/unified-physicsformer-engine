@@ -49,53 +49,45 @@ def compute_loss(model,
                  weights: dict,
                  k:       int) -> tuple:
     """
-    Correct sequential loss computation.
-
-    Critical fix: for each pseudo-timestep gamma, we create
-    a NEW set of points at t + gamma*dt and compute the residual
-    there. This is what the paper actually does — the network
-    sees k different time locations and must satisfy the PDE
-    at ALL of them simultaneously.
+    Clean loss computation — no detach inside residual loop.
+    res_pts must have requires_grad=True from the sampler.
     """
-    device = res_pts.device
-    dt     = model.embedder.dt
+    dt = model.embedder.dt
 
     # ── residual loss ────────────────────────────────────────────
     res_losses = []
     for step in range(k):
-        # create points shifted by step*dt in time
-        pts_step = res_pts.detach().clone()
-        pts_step[:, 1] = res_pts[:, 1].detach() + step * dt
-        pts_step = pts_step.requires_grad_(True)
+        # shift time coordinate for this pseudo-step
+        t_shifted = res_pts[:, 1:2] + step * dt
+        x_coord   = res_pts[:, 0:1]
 
-        # forward pass — take only the first output
-        # (model sees the shifted time via embedder)
+        # build shifted pts with grad enabled
+        pts_step = torch.cat([x_coord, t_shifted], dim=1)
+        pts_step = pts_step.detach().requires_grad_(True)
+
         u_step = model(pts_step)[:, 0, :]
-
-        res = pde_residual(u_step, pts_step, nu)
+        res    = pde_residual(u_step, pts_step, nu)
         res_losses.append(torch.mean(res ** 2))
 
     loss_res = torch.stack(res_losses).mean()
 
-    # ── initial condition loss ───────────────────────────────────
-    ic_pts_clean = ic_pts.detach().clone().requires_grad_(False)
-    u_ic = model(ic_pts_clean)[:, 0, :]
-    u_ic_true = initial_condition(ic_pts_clean[:, 0:1])
-    loss_ic = torch.mean((u_ic - u_ic_true) ** 2)
+    # ── IC loss ──────────────────────────────────────────────────
+    u_ic      = model(ic_pts)[:, 0, :]
+    loss_ic   = torch.mean(
+        (u_ic - initial_condition(ic_pts[:, 0:1])) ** 2
+    )
 
-    # ── boundary condition loss ──────────────────────────────────
-    bc_pts_clean = bc_pts.detach().clone().requires_grad_(False)
-    u_bc_all  = model(bc_pts_clean)
-    u_bc_true = boundary_condition(bc_pts_clean)
-
+    # ── BC loss ──────────────────────────────────────────────────
+    u_bc_all  = model(bc_pts)
+    u_bc_true = boundary_condition(bc_pts)
     bc_losses = []
     for step in range(k):
-        u_step = u_bc_all[:, step, :]
-        bc_losses.append(torch.mean((u_step - u_bc_true) ** 2))
-
+        bc_losses.append(
+            torch.mean((u_bc_all[:, step, :] - u_bc_true) ** 2)
+        )
     loss_bc = torch.stack(bc_losses).mean()
 
-    # ── weighted total ───────────────────────────────────────────
+    # ── total ─────────────────────────────────────────────────────
     total = (weights["residual"] * loss_res +
              weights["ic"]       * loss_ic  +
              weights["bc"]       * loss_bc)
